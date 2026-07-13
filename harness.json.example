@@ -1,0 +1,21 @@
+{
+  "provider": "deepseek",
+  "model": "deepseek-chat",
+  "workspace": ".",
+  "max_steps": 20,
+  "timeout_seconds": 60,
+  "model_max_retries": 2,
+  "model_retry_backoff_seconds": 1,
+  "max_tool_output_chars": 12000,
+  "max_context_chars": 60000,
+  "max_summary_files": 120,
+  "max_run_tokens": 0,
+  "temperature": 0,
+  "approval": "never",
+  "tool_profile": "full",
+  "command_profile": "default",
+  "native_tools": false,
+  "json_mode": false,
+  "trace_messages": false,
+  "trace_model_responses": false
+}

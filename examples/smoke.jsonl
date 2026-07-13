@@ -1,0 +1,1 @@
+{"id":"mock-smoke","task":"Inspect this project","expect_contains":["Offline mock run completed","called list_files"]}

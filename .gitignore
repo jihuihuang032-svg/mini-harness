@@ -1,0 +1,31 @@
+# Local secrets and workspace config
+.env
+!.env.example
+harness.json
+!harness.json.example
+
+# Harness runtime artifacts
+.harness/
+
+# Python caches and test artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Editor and OS noise
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
