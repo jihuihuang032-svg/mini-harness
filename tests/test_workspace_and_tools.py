@@ -201,6 +201,22 @@ class WorkspaceAndToolTests(unittest.TestCase):
             self.assertNotIn("write_file", names)
             self.assertNotIn("apply_patch", names)
 
+    def test_apply_patch_rejects_path_escape(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Workspace(Path(tmp))
+            executor = CommandExecutor(workspace, CommandPolicy.default(), timeout_seconds=10, max_output_chars=1000)
+            router = build_default_router(workspace, executor, max_output_chars=1000)
+            patch = """diff --git a/../outside.txt b/../outside.txt
+--- a/../outside.txt
++++ b/../outside.txt
+@@ -0,0 +1 @@
++bad
+"""
+
+            result = router.call("apply_patch", {"patch": patch})
+
+            self.assertIs(result["ok"], False)
+            self.assertIn("Patch path escapes workspace", result["error"])
     def test_git_status_tool_runs_concise_status(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -298,3 +314,4 @@ class RecordingExecutor:
 
 if __name__ == "__main__":
     unittest.main()
+
