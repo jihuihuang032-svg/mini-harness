@@ -374,6 +374,18 @@ def create_handler(app: HarnessServer) -> type[BaseHTTPRequestHandler]:
                 if parsed.path == "/providers":
                     self._json(200, app.providers())
                     return
+                if parsed.path == "/preview-run":
+                    query = parse_qs(parsed.query)
+                    provider = query.get("provider", [None])[0]
+                    self._json(
+                        200,
+                        app.preview_run(
+                            mock=self._query_bool(query, "mock", True),
+                            provider=provider,
+                            stream=self._query_bool(query, "stream", False),
+                        ),
+                    )
+                    return
                 if parsed.path == "/runs":
                     query = parse_qs(parsed.query)
                     limit = int(query.get("limit", ["20"])[0])
@@ -453,6 +465,7 @@ def create_handler(app: HarnessServer) -> type[BaseHTTPRequestHandler]:
             if raw in {"0", "false", "no", "off"}:
                 return False
             raise ValueError(f"Query parameter {name!r} must be a boolean.")
+
         def _read_json(self) -> dict[str, object]:
             length = int(self.headers.get("Content-Length", "0"))
             raw = self.rfile.read(length).decode("utf-8") if length else "{}"

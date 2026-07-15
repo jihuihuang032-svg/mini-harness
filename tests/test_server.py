@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import json
 import tempfile
+import threading
+from http.client import HTTPConnection
+from http.server import ThreadingHTTPServer
 import time
 import unittest
 from pathlib import Path
 
-from harness.server import HarnessServer
+from harness.server import HarnessServer, create_handler
 
 
 class HarnessServerTests(unittest.TestCase):
@@ -80,6 +84,34 @@ class HarnessServerTests(unittest.TestCase):
                 "system_prompt_sha256",
             ):
                 self.assertEqual(preview[key], traced[key])
+
+    def test_http_preview_run_route_returns_runtime_setup(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "harness.json"
+            config_path.write_text('{"tool_profile": "read-only", "command_profile": "strict"}', encoding="utf-8")
+            server = HarnessServer(tmp, config_path=str(config_path))
+
+            status, payload = _request_json(server, "/preview-run?mock=true&stream=true")
+
+            self.assertEqual(status, 200)
+            self.assertEqual(payload["mode"], "mock")
+            self.assertTrue(payload["stream"])
+            self.assertEqual(payload["tool_profile"], "read-only")
+            self.assertEqual(payload["command_profile"], "strict")
+            self.assertEqual(payload["tool_count"], 5)
+            self.assertIn("tools", payload)
+            self.assertNotIn("api_key", payload)
+            self.assertNotIn("system_prompt", payload)
+
+    def test_http_preview_run_rejects_invalid_bool_query(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            server = HarnessServer(tmp)
+
+            status, payload = _request_json(server, "/preview-run?mock=maybe")
+
+            self.assertEqual(status, 400)
+            self.assertIn("mock", payload["error"])
+            self.assertIn("boolean", payload["error"])
 
     def test_run_mock_task_creates_run_trace(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -226,6 +258,28 @@ class HarnessServerTests(unittest.TestCase):
             }
             self.assertIn("final", trace_kinds)
 
+
+def _request_json(app: HarnessServer, path: str) -> tuple[int, dict[str, object]]:
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), create_handler(app))
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        host, port = httpd.server_address
+        conn = HTTPConnection(host, port, timeout=5)
+        try:
+            conn.request("GET", path)
+            response = conn.getresponse()
+            body = response.read().decode("utf-8")
+            payload = json.loads(body)
+            if not isinstance(payload, dict):
+                raise AssertionError("Expected JSON object response")
+            return response.status, payload
+        finally:
+            conn.close()
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=5)
 
 def _wait_for_task(server: HarnessServer, task_id: str) -> dict[str, object]:
     deadline = time.time() + 5
