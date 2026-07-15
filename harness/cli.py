@@ -806,7 +806,8 @@ def _show_task(args: argparse.Namespace) -> int:
     for record in store.load_latest():
         if record.task_id != args.task_id:
             continue
-        payload = record.to_dict()
+        run_summary = _task_run_summary(args.workspace, args.config, record.run_id)
+        payload = {**record.to_dict(), "run_summary": run_summary}
         if args.json:
             print(json.dumps(payload, ensure_ascii=False, indent=2))
             return 0
@@ -823,9 +824,26 @@ def _show_task(args: argparse.Namespace) -> int:
         print(f"duration_seconds: {record.duration_seconds if record.duration_seconds is not None else '-'}")
         if record.error:
             print(f"error: {record.error}")
+        if run_summary is not None:
+            print(f"run_status: {run_summary['status']}")
+            print(f"run_events: {run_summary['events']}")
+            changes = run_summary.get("changes")
+            if isinstance(changes, dict):
+                print(f"run_changes: {changes.get('changed_count', 0)}")
+            if run_summary.get("final"):
+                final = str(run_summary["final"]).replace("\n", " ")[:200]
+                print(f"run_final: {final}")
         print(f"task: {record.task}")
         return 0
     raise ValueError(f"Task not found: {args.task_id}")
+
+
+def _task_run_summary(workspace_arg: str | None, config_arg: str | None, run_id: str) -> dict[str, object] | None:
+    try:
+        return _run_diagnostic_summary(_store_for_workspace(workspace_arg, config_arg), run_id)
+    except Exception:
+        return None
+
 
 def _list_tools(args: argparse.Namespace) -> int:
     config = HarnessConfig.offline(args.workspace, args.config)

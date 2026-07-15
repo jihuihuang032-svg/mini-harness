@@ -32,8 +32,13 @@ class CliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             run_stdout = io.StringIO()
             with redirect_stdout(run_stdout):
-                self.assertEqual(main(["run", "--workspace", tmp, "--mock", "Inspect this project"]), 0)
-            run_id = [line for line in run_stdout.getvalue().splitlines() if line.startswith("run_id:")][0].split(":", 1)[1].strip()
+                self.assertEqual(
+                    main(["run", "--workspace", tmp, "--mock", "Inspect this project"]), 0
+                )
+            run_id_line = [
+                line for line in run_stdout.getvalue().splitlines() if line.startswith("run_id:")
+            ][0]
+            run_id = run_id_line.split(":", 1)[1].strip()
 
             list_stdout = io.StringIO()
             with redirect_stdout(list_stdout):
@@ -222,6 +227,47 @@ class CliTests(unittest.TestCase):
             task_payload = json.loads(show_json_stdout.getvalue())
             self.assertEqual(task_payload["task_id"], "task-1")
             self.assertEqual(task_payload["result"], {"ok": True})
+
+    def test_show_task_includes_run_summary_when_trace_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run_stdout = io.StringIO()
+            with redirect_stdout(run_stdout):
+                self.assertEqual(
+                    main(["run", "--workspace", tmp, "--mock", "Inspect this project"]), 0
+                )
+            run_id_line = [
+                line for line in run_stdout.getvalue().splitlines() if line.startswith("run_id:")
+            ][0]
+            run_id = run_id_line.split(":", 1)[1].strip()
+
+            store = TaskStore(Path(tmp) / ".harness" / "tasks.jsonl")
+            store.append(
+                TaskRecord(
+                    task_id="task-1",
+                    run_id=run_id,
+                    task="Inspect this project",
+                    stream=False,
+                    mode="mock",
+                    status="completed",
+                    result={"ok": True},
+                )
+            )
+
+            show_stdout = io.StringIO()
+            with redirect_stdout(show_stdout):
+                self.assertEqual(main(["show-task", "--workspace", tmp, "task-1"]), 0)
+            output = show_stdout.getvalue()
+            self.assertIn("run_status: completed", output)
+            self.assertIn("run_events:", output)
+            self.assertIn("run_changes: 0", output)
+            self.assertIn("run_final: Offline mock run completed", output)
+
+            show_json_stdout = io.StringIO()
+            with redirect_stdout(show_json_stdout):
+                self.assertEqual(main(["show-task", "--workspace", tmp, "--json", "task-1"]), 0)
+            payload = json.loads(show_json_stdout.getvalue())
+            self.assertEqual(payload["run_summary"]["run_id"], run_id)
+            self.assertEqual(payload["run_summary"]["status"], "completed")
     def test_list_tools_text_and_json(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             stdout = io.StringIO()
@@ -315,7 +361,10 @@ class CliTests(unittest.TestCase):
             run_stdout = io.StringIO()
             with redirect_stdout(run_stdout):
                 self.assertEqual(main(["run", *args, "Inspect this project"]), 0)
-            run_id = [line for line in run_stdout.getvalue().splitlines() if line.startswith("run_id:")][0].split(":", 1)[1].strip()
+            run_id_line = [
+                line for line in run_stdout.getvalue().splitlines() if line.startswith("run_id:")
+            ][0]
+            run_id = run_id_line.split(":", 1)[1].strip()
 
             show_stdout = io.StringIO()
             with redirect_stdout(show_stdout):
@@ -591,7 +640,9 @@ class CliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             stdout = io.StringIO()
             with redirect_stdout(stdout):
-                self.assertEqual(main(["run", "--workspace", tmp, "--mock", "Inspect this project"]), 0)
+                self.assertEqual(
+                    main(["run", "--workspace", tmp, "--mock", "Inspect this project"]), 0
+                )
             run_id = [line for line in stdout.getvalue().splitlines() if line.startswith("run_id:")][0].split(":", 1)[1].strip()
 
             show_stdout = io.StringIO()
@@ -674,7 +725,9 @@ class CliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             first_stdout = io.StringIO()
             with redirect_stdout(first_stdout):
-                self.assertEqual(main(["run", "--workspace", tmp, "--mock", "Inspect this project"]), 0)
+                self.assertEqual(
+                    main(["run", "--workspace", tmp, "--mock", "Inspect this project"]), 0
+                )
             first_run_id = [line for line in first_stdout.getvalue().splitlines() if line.startswith("run_id:")][0].split(":", 1)[1].strip()
 
             resume_stdout = io.StringIO()
@@ -688,4 +741,3 @@ class CliTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
