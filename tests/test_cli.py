@@ -288,6 +288,29 @@ class CliTests(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertIn("Stopped after reaching max_steps=1.", stdout.getvalue())
 
+    def test_run_can_read_task_from_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            task_path = Path(tmp) / "task.md"
+            task_path.write_text("Inspect this project\n", encoding="utf-8")
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                code = main(["run", "--workspace", tmp, "--mock", "--json", "--task-file", str(task_path)])
+
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, 0)
+            self.assertIn("Offline mock run completed", payload["content"])
+            self.assertIn("run_id", payload)
+
+    def test_run_rejects_task_and_task_file_together(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            task_path = Path(tmp) / "task.md"
+            task_path.write_text("Inspect this project\n", encoding="utf-8")
+            stderr = io.StringIO()
+            with redirect_stderr(stderr):
+                code = main(["run", "--workspace", tmp, "--mock", "--task-file", str(task_path), "Inspect this project"])
+
+            self.assertEqual(code, 1)
+            self.assertIn("either a task argument or --task-file", stderr.getvalue())
     def test_run_json_outputs_machine_readable_result(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             stdout = io.StringIO()
@@ -480,3 +503,4 @@ class CliTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

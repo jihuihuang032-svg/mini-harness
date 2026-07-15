@@ -95,6 +95,11 @@ python -m harness eval --mock examples/smoke.jsonl
 python -m harness.cli run --mock "Inspect this project"
 ```
 
+也可以把较长的任务说明放到 UTF-8 文本文件中，避免命令行转义和换行问题:
+
+```powershell
+python -m harness.cli run --mock --task-file task.md
+```
 从脚本或 CI 调用框架时使用 JSON 输出:
 
 ```powershell
@@ -479,3 +484,4 @@ tests/                  smoke/单元测试
 ## 设计说明
 
 这有意地不仅仅是一个聊天机器人包装器。重要的工程面在于模型周围的运行时:安全的工作区访问、动作解析、工具路由、shell 策略、审批控制、日志、运行历史、checkpoint、工作区变更追踪、上下文控制以及对失败动作的恢复。
+

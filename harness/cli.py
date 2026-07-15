@@ -1,24 +1,8 @@
-"""命令行入口:解析参数 + 调度子命令。
+"""Command-line entry point for Mini Harness.
 
-子命令一览:
-    init         初始化工作区(生成 harness.json/.env 模板)
-    doctor       检查工作区与 provider 配置
-    run          执行一次 agent 任务
-    resume       从 checkpoint 恢复 run
-    eval         跑一组 JSONL 评测用例
-    list-runs    列出最近的 run
-    list-evals   列出最近评测报告
-    list-tools   列出当前 tool profile 暴露的工具
-    list-providers 列出内置 provider 预设
-    list-profiles  列出 tool/command profile 选项
-    show-run     打印某 run 的完整事件流
-    show-changes 打印某 run 的工作区变更
-    show-checkpoint 打印某 run 的 checkpoint
-    show-eval    打印某次评测的完整报告
-    server       启动 HTTP server
-
-类似 Spring Boot CommandLineRunner:把所有子命令实现都收敛到这一个文件,
-每个 _xxx(args) 函数对应一个子命令,main() 负责解析与分发。
+This module owns argument parsing and dispatch for the CLI subcommands: run,
+resume, eval, history inspection, provider/profile listing, initialization,
+doctor checks, and the lightweight server.
 """
 
 from __future__ import annotations
@@ -51,7 +35,7 @@ from harness.server import serve
 from harness.tools import build_default_router
 
 
-# 所有支持的子命令(用于校验第一个位置参数是不是子命令)
+# Supported subcommands. Used to detect legacy shorthand invocations.
 COMMANDS = {
     "doctor",
     "eval",
@@ -94,23 +78,20 @@ PROFILE_DESCRIPTIONS: dict[str, list[dict[str, object]]] = {
 
 
 def _configure_stdio() -> None:
-    """强制 stdout/stderr 用 UTF-8 输出(避免 Windows 默认 GBK 报 UnicodeEncodeError)。"""
+    """Configure UTF-8 stdio where supported."""
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="replace")
 
 
 def main(argv: list[str] | None = None) -> int:
-    """命令行入口:返回退出码(0=成功,非 0=失败)。
-
-    @param argv: 参数列表(默认用 sys.argv[1:],测试时可注入)
-    """
+    """Parse CLI arguments and return a process exit code."""
     _configure_stdio()
     argv = list(sys.argv[1:] if argv is None else argv)
-    # 简写:harness "do something" 自动等价于 harness run "do something"
+    # Shorthand: harness "do something" is treated as harness run "do something".
     if argv and argv[0] not in COMMANDS and not argv[0].startswith("-"):
         argv = ["run", *argv]
-    # harness -h 等价于 harness run -h
+    # Options before a subcommand are treated as run options, except top-level help/version.
     if argv and argv[0].startswith("-") and argv[0] not in {"-h", "--help", "--version"}:
         argv = ["run", *argv]
 
@@ -148,7 +129,8 @@ def main(argv: list[str] | None = None) -> int:
 
     run_parser = subparsers.add_parser("run", help="Run a coding-agent task.")
     _add_common_workspace_arg(run_parser)
-    run_parser.add_argument("task", help="Task for the coding agent.")
+    run_parser.add_argument("task", nargs="?", help="Task for the coding agent. Omit when using --task-file.")
+    run_parser.add_argument("--task-file", help="Read the task prompt from a UTF-8 text file.")
     run_parser.add_argument("--mock", action="store_true", help="Use a deterministic offline model instead of calling an API.")
     run_parser.add_argument("--provider", choices=provider_names(), help="Use a built-in OpenAI-compatible provider preset.")
     run_parser.add_argument("--stream", action="store_true", help="Stream model output chunks while still parsing the final JSON action.")
@@ -281,13 +263,13 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _add_common_workspace_arg(parser: argparse.ArgumentParser) -> None:
-    """给所有需要工作区的子命令统一加 --workspace / --config 参数。"""
+    """Add common workspace and config arguments."""
     parser.add_argument("--workspace", help="Workspace directory. Defaults to HARNESS_WORKSPACE or current directory.")
     parser.add_argument("--config", help="Path to harness.json. Defaults to <workspace>/harness.json or ./harness.json.")
 
 
 def _init(args: argparse.Namespace) -> int:
-    """harness init 子命令:生成 harness.json(可选 .env)。"""
+    """Handle the init subcommand."""
     results = init_workspace(args.workspace, include_env=args.env, force=args.force)
     if args.json:
         print(json.dumps([result.to_dict() for result in results], ensure_ascii=False, indent=2))
@@ -298,7 +280,7 @@ def _init(args: argparse.Namespace) -> int:
 
 
 def _doctor(args: argparse.Namespace) -> int:
-    """harness doctor 子命令:检查工作区与 provider 配置。"""
+    """Handle the doctor subcommand."""
     report = run_doctor(args.workspace, args.config, args.provider, mock=args.mock)
     if args.json:
         print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
@@ -310,11 +292,12 @@ def _doctor(args: argparse.Namespace) -> int:
 
 
 def _run_task(args: argparse.Namespace) -> int:
-    """harness run 子命令:执行一次 agent 任务。"""
+    """Handle the run subcommand."""
     if args.stream and args.json:
         raise ValueError("--stream cannot be combined with --json because streamed chunks would corrupt JSON output.")
+    task = _resolve_task_input(args.task, args.task_file)
     result = _execute_agent_task(
-        task=args.task,
+        task=task,
         workspace_arg=args.workspace,
         config_arg=args.config,
         mock=args.mock,
@@ -335,8 +318,24 @@ def _run_task(args: argparse.Namespace) -> int:
     return 0
 
 
+def _resolve_task_input(task: str | None, task_file: str | None) -> str:
+    if task and task_file:
+        raise ValueError("Provide either a task argument or --task-file, not both.")
+    if task_file:
+        path = Path(task_file)
+        if not path.exists():
+            raise ValueError(f"Task file not found: {task_file}")
+        if not path.is_file():
+            raise ValueError(f"Task file is not a file: {task_file}")
+        content = path.read_text(encoding="utf-8").strip()
+        if not content:
+            raise ValueError(f"Task file is empty: {task_file}")
+        return content
+    if task:
+        return task
+    raise ValueError("Task is required. Provide a task argument or --task-file.")
 def _resume_task(args: argparse.Namespace) -> int:
-    """harness resume 子命令:从 checkpoint 恢复 run。"""
+    """Handle the resume subcommand."""
     if args.stream and args.json:
         raise ValueError("--stream cannot be combined with --json because streamed chunks would corrupt JSON output.")
     result = _execute_agent_task(
@@ -375,18 +374,7 @@ def _execute_agent_task(
     command_profile_override: str | None,
     resume_from: str | None = None,
 ) -> dict[str, object]:
-    """run / resume / eval 共用的执行入口:装配所有依赖 -> 跑 agent -> 返回结果 dict。
-
-    装配链(类似 Spring 的 ApplicationContext 装配 Bean):
-        1. HarnessConfig(从 env/offline 装载)
-        2. Workspace + CommandPolicy + ApprovalController + CommandExecutor
-        3. ToolRouter(根据 tool_profile 选择可见工具)
-        4. RunLogger(写 trace)
-        5. WorkspaceChangeTracker(运行前后对比文件变更)
-        6. ModelClient(MockModelClient / OpenAICompatibleClient)
-        7. Agent(注入所有依赖)
-    运行后返回 dict:run_id / content / steps / changes。
-    """
+    """Build runtime dependencies, execute the agent, and return run metadata."""
     config = (
         HarnessConfig.offline(workspace_arg, config_arg)
         if mock
@@ -470,7 +458,7 @@ def _execute_agent_task(
 
 
 def _eval(args: argparse.Namespace) -> int:
-    """harness eval 子命令:跑一组 JSONL 评测用例。"""
+    """Handle the eval subcommand."""
     cases = load_eval_cases(Path(args.cases))
     eval_workspace = Workspace(HarnessConfig.offline(args.workspace, args.config).workspace)
     eval_store = EvalStore(eval_workspace.evals_dir)
@@ -566,12 +554,12 @@ def _show_eval(args: argparse.Namespace) -> int:
 
 
 def _print_stream_chunk(chunk: str) -> None:
-    """流式输出回调:每个 chunk 到达时立即 print(flush=True)。"""
+    """Print one streamed model chunk."""
     print(chunk, end="", flush=True)
 
 
 def _store_for_workspace(workspace_arg: str | None, config_arg: str | None) -> RunStore:
-    """根据 workspace/config 参数构造 RunStore(用于 list-runs/show-run)。"""
+    """Build a RunStore for workspace history commands."""
     config = HarnessConfig.offline(workspace_arg, config_arg)
     workspace = Workspace(config.workspace)
     return RunStore(workspace.logs_dir)
@@ -718,4 +706,3 @@ def _server(args: argparse.Namespace) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
