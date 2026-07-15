@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 from harness import __version__
@@ -121,6 +122,7 @@ def main(argv: list[str] | None = None) -> int:
     eval_parser.add_argument("--approval", choices=["never", "on-request", "auto"], help="Override approval mode.")
     eval_parser.add_argument("--fail-fast", action="store_true", help="Stop on first failed eval case.")
     eval_parser.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    _add_budget_override_args(eval_parser)
 
     list_evals_parser = subparsers.add_parser("list-evals", help="List saved eval reports.")
     _add_common_workspace_arg(list_evals_parser)
@@ -135,6 +137,7 @@ def main(argv: list[str] | None = None) -> int:
     run_parser.add_argument("--provider", choices=provider_names(), help="Use a built-in OpenAI-compatible provider preset.")
     run_parser.add_argument("--stream", action="store_true", help="Stream model output chunks while still parsing the final JSON action.")
     run_parser.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    _add_budget_override_args(run_parser)
     run_parser.add_argument(
         "--tool-profile",
         choices=["full", "review", "read-only"],
@@ -158,6 +161,7 @@ def main(argv: list[str] | None = None) -> int:
     resume_parser.add_argument("--provider", choices=provider_names(), help="Use a built-in OpenAI-compatible provider preset.")
     resume_parser.add_argument("--stream", action="store_true", help="Stream model output chunks while still parsing the final JSON action.")
     resume_parser.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    _add_budget_override_args(resume_parser)
     resume_parser.add_argument(
         "--tool-profile",
         choices=["full", "review", "read-only"],
@@ -268,6 +272,12 @@ def _add_common_workspace_arg(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--config", help="Path to harness.json. Defaults to <workspace>/harness.json or ./harness.json.")
 
 
+def _add_budget_override_args(parser: argparse.ArgumentParser) -> None:
+    """Add per-command run budget override arguments."""
+    parser.add_argument("--max-steps", type=int, help="Override the maximum agent loop steps for this command.")
+    parser.add_argument("--max-run-tokens", type=int, help="Override the provider-reported token budget for this command; 0 disables it.")
+
+
 def _init(args: argparse.Namespace) -> int:
     """Handle the init subcommand."""
     results = init_workspace(args.workspace, include_env=args.env, force=args.force)
@@ -306,6 +316,8 @@ def _run_task(args: argparse.Namespace) -> int:
         approval_override=args.approval,
         tool_profile_override=args.tool_profile,
         command_profile_override=args.command_profile,
+        max_steps_override=args.max_steps,
+        max_run_tokens_override=args.max_run_tokens,
     )
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
@@ -334,6 +346,8 @@ def _resolve_task_input(task: str | None, task_file: str | None) -> str:
     if task:
         return task
     raise ValueError("Task is required. Provide a task argument or --task-file.")
+
+
 def _resume_task(args: argparse.Namespace) -> int:
     """Handle the resume subcommand."""
     if args.stream and args.json:
@@ -348,6 +362,8 @@ def _resume_task(args: argparse.Namespace) -> int:
         approval_override=args.approval,
         tool_profile_override=args.tool_profile,
         command_profile_override=args.command_profile,
+        max_steps_override=args.max_steps,
+        max_run_tokens_override=args.max_run_tokens,
         resume_from=args.run_id,
     )
     if args.json:
@@ -372,6 +388,8 @@ def _execute_agent_task(
     approval_override: str | None,
     tool_profile_override: str | None,
     command_profile_override: str | None,
+    max_steps_override: int | None = None,
+    max_run_tokens_override: int | None = None,
     resume_from: str | None = None,
 ) -> dict[str, object]:
     """Build runtime dependencies, execute the agent, and return run metadata."""
@@ -380,6 +398,7 @@ def _execute_agent_task(
         if mock
         else HarnessConfig.from_env(workspace_arg, provider, config_arg)
     )
+    config = _apply_budget_overrides(config, max_steps_override, max_run_tokens_override)
     workspace = Workspace(config.workspace)
     command_profile = command_profile_override or config.command_profile
     policy = CommandPolicy.default(command_profile)
@@ -457,6 +476,21 @@ def _execute_agent_task(
     }
 
 
+def _apply_budget_overrides(
+    config: HarnessConfig,
+    max_steps: int | None,
+    max_run_tokens: int | None,
+) -> HarnessConfig:
+    updates: dict[str, int] = {}
+    if max_steps is not None:
+        if max_steps < 1:
+            raise ValueError("--max-steps must be >= 1.")
+        updates["max_steps"] = max_steps
+    if max_run_tokens is not None:
+        if max_run_tokens < 0:
+            raise ValueError("--max-run-tokens must be >= 0.")
+        updates["max_run_tokens"] = max_run_tokens
+    return replace(config, **updates) if updates else config
 def _eval(args: argparse.Namespace) -> int:
     """Handle the eval subcommand."""
     cases = load_eval_cases(Path(args.cases))
@@ -475,6 +509,8 @@ def _eval(args: argparse.Namespace) -> int:
                 approval_override=args.approval,
                 tool_profile_override=args.tool_profile,
                 command_profile_override=args.command_profile,
+                max_steps_override=args.max_steps,
+                max_run_tokens_override=args.max_run_tokens,
             )
             result = evaluate_case(
                 case,

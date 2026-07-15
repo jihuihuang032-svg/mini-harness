@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import io
 import json
@@ -277,6 +277,23 @@ class CliTests(unittest.TestCase):
             self.assertIn("changes:", output)
             self.assertIn("run_id:", output)
 
+    def test_run_max_steps_cli_override_stops_early(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                code = main(["run", "--workspace", tmp, "--mock", "--max-steps", "1", "Inspect this project"])
+
+            self.assertEqual(code, 0)
+            self.assertIn("Stopped after reaching max_steps=1.", stdout.getvalue())
+
+    def test_run_rejects_invalid_budget_overrides(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            stderr = io.StringIO()
+            with redirect_stderr(stderr):
+                code = main(["run", "--workspace", tmp, "--mock", "--max-run-tokens", "-1", "Inspect this project"])
+
+            self.assertEqual(code, 1)
+            self.assertIn("--max-run-tokens must be >= 0", stderr.getvalue())
     def test_run_reads_explicit_config_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / "harness.json"

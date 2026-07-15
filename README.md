@@ -1,4 +1,4 @@
-﻿# Mini Harness
+# Mini Harness
 
 Mini Harness 是一个小巧但完整的编码 Agent 框架。它将模型与执行系统分开:
 
@@ -112,6 +112,11 @@ python -m harness.cli run --mock --json "Inspect this project"
 python -m harness.cli run --mock --stream "Inspect this project"
 ```
 
+为控制单次真实模型调用成本，可以直接在 CLI 覆盖循环步数和 provider 上报的 token 预算:
+
+```powershell
+python -m harness.cli run --provider deepseek --max-steps 6 --max-run-tokens 20000 "Inspect this project"
+```
 使用真实模型时,将 `.env.example` 复制为 `.env` 并填入 provider 设置,或直接设置环境变量。
 
 ```powershell
