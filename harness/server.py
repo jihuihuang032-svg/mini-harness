@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import time
+from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -42,6 +43,17 @@ from harness.runtime.task_queue import TaskQueue
 from harness.runtime.task_store import TaskStore
 from harness.runtime.workspace import Workspace
 from harness.tools import build_default_router
+
+@dataclass(frozen=True)
+class ServerRuntime:
+    """Runtime dependencies shared by server preview and task execution."""
+
+    config: HarnessConfig
+    approval: ApprovalController
+    executor: CommandExecutor
+    router: object
+    tool_specs: list[dict[str, object]]
+    system_prompt: str
 
 
 class HarnessServer:
@@ -67,7 +79,7 @@ class HarnessServer:
     def providers(self) -> list[dict[str, str]]:
         return [PROVIDER_PRESETS[name].to_dict() for name in provider_names()]
 
-    def preview_run(self, mock: bool = True, provider: str | None = None, stream: bool = False) -> dict[str, object]:
+    def _build_runtime(self, mock: bool = True, provider: str | None = None) -> ServerRuntime:
         config = self.config if mock else HarnessConfig.from_env(str(self.workspace.root), provider, self.config_path)
         approval = ApprovalController("never")
         executor = CommandExecutor(
@@ -84,20 +96,42 @@ class HarnessServer:
             tool_profile=config.tool_profile,
         )
         tool_specs = router.specs()
-        system_prompt = render_system_prompt(router)
+        return ServerRuntime(
+            config=config,
+            approval=approval,
+            executor=executor,
+            router=router,
+            tool_specs=tool_specs,
+            system_prompt=render_system_prompt(router),
+        )
+
+    def _run_config_payload(
+        self,
+        runtime: ServerRuntime,
+        *,
+        mock: bool,
+        stream: bool,
+        resume_from: str | None = None,
+    ) -> dict[str, object]:
+        return run_config_snapshot(
+            runtime.config,
+            mode="mock" if mock else "model",
+            stream=stream,
+            tool_profile=runtime.config.tool_profile,
+            command_profile=runtime.config.command_profile,
+            approval=runtime.approval.mode,
+            tool_specs=runtime.tool_specs,
+            system_prompt=runtime.system_prompt,
+            resume_from=resume_from,
+        )
+
+    def preview_run(self, mock: bool = True, provider: str | None = None, stream: bool = False) -> dict[str, object]:
+        runtime = self._build_runtime(mock=mock, provider=provider)
         return {
-            **run_config_snapshot(
-                config,
-                mode="mock" if mock else "model",
-                stream=stream,
-                tool_profile=config.tool_profile,
-                command_profile=config.command_profile,
-                approval=approval.mode,
-                tool_specs=tool_specs,
-                system_prompt=system_prompt,
-            ),
-            "tools": tool_specs,
+            **self._run_config_payload(runtime, mock=mock, stream=stream),
+            "tools": runtime.tool_specs,
         }
+
     def list_runs(self, limit: int = 20) -> list[dict[str, object]]:
         return [summary.to_dict() for summary in self.store.list_runs(limit=limit)]
 
@@ -210,43 +244,16 @@ class HarnessServer:
         tracker = WorkspaceChangeTracker(self.workspace)
         before = tracker.capture()
         logger.event("workspace_snapshot", {"phase": "before", "file_count": len(before.files)})
-        executor = CommandExecutor(
-            self.workspace,
-            CommandPolicy.default(self.config.command_profile),
-            self.config.timeout_seconds,
-            self.config.max_tool_output_chars,
-            ApprovalController("never"),
-        )
-        router = build_default_router(
-            self.workspace,
-            executor,
-            self.config.max_tool_output_chars,
-            tool_profile=self.config.tool_profile,
-        )
-        tool_specs = router.specs()
-        system_prompt = render_system_prompt(router)
+        runtime = self._build_runtime(mock=True)
         chunks: list[str] = []
-        logger.event(
-            "run_config",
-            run_config_snapshot(
-                self.config,
-                mode="mock",
-                stream=stream,
-                tool_profile=self.config.tool_profile,
-                command_profile=self.config.command_profile,
-                approval="never",
-                tool_specs=tool_specs,
-                system_prompt=system_prompt,
-                resume_from=resume_from,
-            ),
-        )
-        logger.event("tool_profile", {"profile": self.config.tool_profile})
-        logger.event("command_profile", {"profile": self.config.command_profile})
+        logger.event("run_config", self._run_config_payload(runtime, mock=True, stream=stream, resume_from=resume_from))
+        logger.event("tool_profile", {"profile": runtime.config.tool_profile})
+        logger.event("command_profile", {"profile": runtime.config.command_profile})
         try:
             agent = Agent(
-                config=self.config,
+                config=runtime.config,
                 model=MockModelClient(calls=loaded_checkpoint.step if loaded_checkpoint is not None else 0),
-                tools=router,
+                tools=runtime.router,
                 logger=logger,
                 workspace=self.workspace,
                 plan=loaded_checkpoint.plan if loaded_checkpoint is not None else None,
@@ -289,7 +296,8 @@ class HarnessServer:
     ) -> dict[str, object]:
         if not task:
             raise ValueError("Task is required.")
-        config = HarnessConfig.from_env(str(self.workspace.root), provider, self.config_path)
+        runtime = self._build_runtime(mock=False, provider=provider)
+        config = runtime.config
         loaded_checkpoint = self.checkpoints.load_state(resume_from) if resume_from is not None else None
         if loaded_checkpoint is not None and loaded_checkpoint.status == "completed":
             raise ValueError(f"Checkpoint is already completed: {resume_from}")
@@ -297,43 +305,15 @@ class HarnessServer:
         tracker = WorkspaceChangeTracker(self.workspace)
         before = tracker.capture()
         logger.event("workspace_snapshot", {"phase": "before", "file_count": len(before.files)})
-        executor = CommandExecutor(
-            self.workspace,
-            CommandPolicy.default(config.command_profile),
-            config.timeout_seconds,
-            config.max_tool_output_chars,
-            ApprovalController("never"),
-        )
-        router = build_default_router(
-            self.workspace,
-            executor,
-            config.max_tool_output_chars,
-            tool_profile=config.tool_profile,
-        )
-        tool_specs = router.specs()
-        system_prompt = render_system_prompt(router)
         chunks: list[str] = []
-        logger.event(
-            "run_config",
-            run_config_snapshot(
-                config,
-                mode="model",
-                stream=stream,
-                tool_profile=config.tool_profile,
-                command_profile=config.command_profile,
-                approval="never",
-                tool_specs=tool_specs,
-                system_prompt=system_prompt,
-                resume_from=resume_from,
-            ),
-        )
-        logger.event("tool_profile", {"profile": config.tool_profile})
-        logger.event("command_profile", {"profile": config.command_profile})
+        logger.event("run_config", self._run_config_payload(runtime, mock=False, stream=stream, resume_from=resume_from))
+        logger.event("tool_profile", {"profile": runtime.config.tool_profile})
+        logger.event("command_profile", {"profile": runtime.config.command_profile})
         try:
             agent = Agent(
                 config=config,
-                model=OpenAICompatibleClient(config, tool_specs),
-                tools=router,
+                model=OpenAICompatibleClient(runtime.config, runtime.tool_specs),
+                tools=runtime.router,
                 logger=logger,
                 workspace=self.workspace,
                 plan=loaded_checkpoint.plan if loaded_checkpoint is not None else None,

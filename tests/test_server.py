@@ -80,6 +80,7 @@ class HarnessServerTests(unittest.TestCase):
                 "system_prompt_sha256",
             ):
                 self.assertEqual(preview[key], traced[key])
+
     def test_run_mock_task_creates_run_trace(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             server = HarnessServer(tmp)
