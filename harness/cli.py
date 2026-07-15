@@ -45,6 +45,7 @@ COMMANDS = {
     "list-profiles",
     "list-runs",
     "list-tools",
+    "preview-run",
     "resume",
     "run",
     "show-eval",
@@ -129,6 +130,16 @@ def main(argv: list[str] | None = None) -> int:
     list_evals_parser.add_argument("--limit", type=int, default=20, help="Maximum number of eval reports to show.")
     list_evals_parser.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
 
+    preview_parser = subparsers.add_parser("preview-run", help="Preview run configuration without calling the model.")
+    _add_common_workspace_arg(preview_parser)
+    preview_parser.add_argument("--mock", action="store_true", help="Use offline mock config instead of real provider config.")
+    preview_parser.add_argument("--provider", choices=provider_names(), help="Use a built-in OpenAI-compatible provider preset.")
+    preview_parser.add_argument("--stream", action="store_true", help="Preview stream mode.")
+    preview_parser.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    _add_budget_override_args(preview_parser)
+    preview_parser.add_argument("--tool-profile", choices=["full", "review", "read-only"], help="Override tool profile.")
+    preview_parser.add_argument("--command-profile", choices=["default", "strict"], help="Override command profile.")
+    preview_parser.add_argument("--approval", choices=["never", "on-request", "auto"], help="Override approval mode.")
     run_parser = subparsers.add_parser("run", help="Run a coding-agent task.")
     _add_common_workspace_arg(run_parser)
     run_parser.add_argument("task", nargs="?", help="Task for the coding agent. Omit when using --task-file.")
@@ -247,6 +258,8 @@ def main(argv: list[str] | None = None) -> int:
             return _list_runs(args)
         if args.command == "list-tools":
             return _list_tools(args)
+        if args.command == "preview-run":
+            return _preview_run(args)
         if args.command == "show-eval":
             return _show_eval(args)
         if args.command == "show-run":
@@ -301,6 +314,66 @@ def _doctor(args: argparse.Namespace) -> int:
             print(f"{status}\t{check.name}\t{check.message}")
     return 0 if report.ok else 1
 
+
+def _preview_run(args: argparse.Namespace) -> int:
+    """Show the runtime setup that a run would use, without starting the agent loop."""
+    config = (
+        HarnessConfig.offline(args.workspace, args.config)
+        if args.mock
+        else HarnessConfig.from_env(args.workspace, args.provider, args.config)
+    )
+    config = _apply_budget_overrides(config, args.max_steps, args.max_run_tokens)
+    workspace = Workspace(config.workspace)
+    command_profile = args.command_profile or config.command_profile
+    policy = CommandPolicy.default(command_profile)
+    approval = ApprovalController(args.approval or config.approval)
+    executor = CommandExecutor(workspace, policy, config.timeout_seconds, config.max_tool_output_chars, approval)
+    tool_profile = args.tool_profile or config.tool_profile
+    router = build_default_router(workspace, executor, config.max_tool_output_chars, tool_profile=tool_profile)
+    tool_specs = router.specs()
+    system_prompt = render_system_prompt(router)
+    payload = {
+        **run_config_snapshot(
+            config,
+            mode="mock" if args.mock else "model",
+            stream=args.stream,
+            tool_profile=tool_profile,
+            command_profile=command_profile,
+            approval=approval.mode,
+            tool_specs=tool_specs,
+            system_prompt=system_prompt,
+        ),
+        "tools": tool_specs,
+    }
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
+    _print_run_preview(payload)
+    return 0
+
+
+def _print_run_preview(payload: dict[str, object]) -> None:
+    """Print the preview payload in a compact human-readable form."""
+    for key in (
+        "mode",
+        "provider",
+        "model",
+        "base_url",
+        "workspace",
+        "tool_profile",
+        "command_profile",
+        "approval",
+        "max_steps",
+        "max_run_tokens",
+        "max_context_chars",
+        "max_tool_output_chars",
+        "native_tools",
+        "json_mode",
+        "stream",
+        "tool_count",
+    ):
+        print(f"{key}: {payload.get(key)}")
+    print(f"tools: {', '.join(str(name) for name in payload.get('tool_names', []))}")
 
 def _run_task(args: argparse.Namespace) -> int:
     """Handle the run subcommand."""
@@ -492,6 +565,8 @@ def _apply_budget_overrides(
             raise ValueError("--max-run-tokens must be >= 0.")
         updates["max_run_tokens"] = max_run_tokens
     return replace(config, **updates) if updates else config
+
+
 def _eval(args: argparse.Namespace) -> int:
     """Handle the eval subcommand."""
     cases = load_eval_cases(Path(args.cases))

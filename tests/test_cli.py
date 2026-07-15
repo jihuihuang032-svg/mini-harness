@@ -197,6 +197,62 @@ class CliTests(unittest.TestCase):
             self.assertNotIn("write_file", names)
             self.assertIn("args_schema", payload["tools"][0])
 
+    def test_preview_run_mock_json_outputs_runtime_setup(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                code = main(
+                    [
+                        "preview-run",
+                        "--workspace",
+                        tmp,
+                        "--mock",
+                        "--stream",
+                        "--tool-profile",
+                        "read-only",
+                        "--command-profile",
+                        "strict",
+                        "--approval",
+                        "auto",
+                        "--max-steps",
+                        "3",
+                        "--max-run-tokens",
+                        "10",
+                        "--json",
+                    ]
+                )
+
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, 0)
+            self.assertEqual(payload["mode"], "mock")
+            self.assertTrue(payload["stream"])
+            self.assertEqual(payload["workspace"], str(Path(tmp).resolve()))
+            self.assertEqual(payload["tool_profile"], "read-only")
+            self.assertEqual(payload["command_profile"], "strict")
+            self.assertEqual(payload["approval"], "auto")
+            self.assertEqual(payload["max_steps"], 3)
+            self.assertEqual(payload["max_run_tokens"], 10)
+            self.assertEqual(payload["tool_count"], 5)
+            self.assertEqual(payload["tool_names"], ["git_diff", "git_status", "list_files", "read_file", "search_text"])
+            self.assertEqual(len(payload["tool_schema_sha256"]), 64)
+            self.assertEqual(len(payload["system_prompt_sha256"]), 64)
+            self.assertIn("tools", payload)
+            self.assertIn("args_schema", payload["tools"][0])
+            self.assertNotIn("api_key", payload)
+            self.assertNotIn("system_prompt", payload)
+
+    def test_preview_run_text_outputs_runtime_setup(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                code = main(["preview-run", "--workspace", tmp, "--mock", "--tool-profile", "read-only"])
+
+            output = stdout.getvalue()
+            self.assertEqual(code, 0)
+            self.assertIn("mode: mock", output)
+            self.assertIn("tool_profile: read-only", output)
+            self.assertIn("tool_count: 5", output)
+            self.assertIn("tools: git_diff, git_status, list_files, read_file, search_text", output)
     def test_init_command_json_output(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             stdout = io.StringIO()
