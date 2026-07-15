@@ -10,7 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from harness import __version__
@@ -79,6 +79,20 @@ PROFILE_DESCRIPTIONS: dict[str, list[dict[str, object]]] = {
 }
 
 
+@dataclass(frozen=True)
+class CliRuntime:
+    """Runtime dependencies shared by preview, run, and resume commands."""
+
+    config: HarnessConfig
+    workspace: Workspace
+    command_profile: str
+    approval: ApprovalController
+    executor: CommandExecutor
+    tool_profile: str
+    router: object
+    tool_specs: list[dict[str, object]]
+    system_prompt: str
+
 def _configure_stdio() -> None:
     """Configure UTF-8 stdio where supported."""
     for stream in (sys.stdout, sys.stderr):
@@ -140,6 +154,7 @@ def main(argv: list[str] | None = None) -> int:
     preview_parser.add_argument("--tool-profile", choices=["full", "review", "read-only"], help="Override tool profile.")
     preview_parser.add_argument("--command-profile", choices=["default", "strict"], help="Override command profile.")
     preview_parser.add_argument("--approval", choices=["never", "on-request", "auto"], help="Override approval mode.")
+
     run_parser = subparsers.add_parser("run", help="Run a coding-agent task.")
     _add_common_workspace_arg(run_parser)
     run_parser.add_argument("task", nargs="?", help="Task for the coding agent. Omit when using --task-file.")
@@ -315,35 +330,83 @@ def _doctor(args: argparse.Namespace) -> int:
     return 0 if report.ok else 1
 
 
-def _preview_run(args: argparse.Namespace) -> int:
-    """Show the runtime setup that a run would use, without starting the agent loop."""
+def _build_cli_runtime(
+    workspace_arg: str | None,
+    config_arg: str | None,
+    mock: bool,
+    provider: str | None,
+    approval_override: str | None,
+    tool_profile_override: str | None,
+    command_profile_override: str | None,
+    max_steps_override: int | None = None,
+    max_run_tokens_override: int | None = None,
+) -> CliRuntime:
+    """Build the runtime dependencies used by CLI agent commands."""
     config = (
-        HarnessConfig.offline(args.workspace, args.config)
-        if args.mock
-        else HarnessConfig.from_env(args.workspace, args.provider, args.config)
+        HarnessConfig.offline(workspace_arg, config_arg)
+        if mock
+        else HarnessConfig.from_env(workspace_arg, provider, config_arg)
     )
-    config = _apply_budget_overrides(config, args.max_steps, args.max_run_tokens)
+    config = _apply_budget_overrides(config, max_steps_override, max_run_tokens_override)
     workspace = Workspace(config.workspace)
-    command_profile = args.command_profile or config.command_profile
+    command_profile = command_profile_override or config.command_profile
     policy = CommandPolicy.default(command_profile)
-    approval = ApprovalController(args.approval or config.approval)
+    approval = ApprovalController(approval_override or config.approval)
     executor = CommandExecutor(workspace, policy, config.timeout_seconds, config.max_tool_output_chars, approval)
-    tool_profile = args.tool_profile or config.tool_profile
+    tool_profile = tool_profile_override or config.tool_profile
     router = build_default_router(workspace, executor, config.max_tool_output_chars, tool_profile=tool_profile)
     tool_specs = router.specs()
     system_prompt = render_system_prompt(router)
+    return CliRuntime(
+        config=config,
+        workspace=workspace,
+        command_profile=command_profile,
+        approval=approval,
+        executor=executor,
+        tool_profile=tool_profile,
+        router=router,
+        tool_specs=tool_specs,
+        system_prompt=system_prompt,
+    )
+
+
+def _run_config_preview_payload(
+    runtime: CliRuntime,
+    *,
+    mock: bool,
+    stream: bool,
+    resume_from: str | None = None,
+) -> dict[str, object]:
+    """Build the non-secret run setup payload shared by preview and trace logging."""
+    return run_config_snapshot(
+        runtime.config,
+        mode="mock" if mock else "model",
+        stream=stream,
+        tool_profile=runtime.tool_profile,
+        command_profile=runtime.command_profile,
+        approval=runtime.approval.mode,
+        tool_specs=runtime.tool_specs,
+        system_prompt=runtime.system_prompt,
+        resume_from=resume_from,
+    )
+
+
+def _preview_run(args: argparse.Namespace) -> int:
+    """Show the runtime setup that a run would use, without starting the agent loop."""
+    runtime = _build_cli_runtime(
+        workspace_arg=args.workspace,
+        config_arg=args.config,
+        mock=args.mock,
+        provider=args.provider,
+        approval_override=args.approval,
+        tool_profile_override=args.tool_profile,
+        command_profile_override=args.command_profile,
+        max_steps_override=args.max_steps,
+        max_run_tokens_override=args.max_run_tokens,
+    )
     payload = {
-        **run_config_snapshot(
-            config,
-            mode="mock" if args.mock else "model",
-            stream=args.stream,
-            tool_profile=tool_profile,
-            command_profile=command_profile,
-            approval=approval.mode,
-            tool_specs=tool_specs,
-            system_prompt=system_prompt,
-        ),
-        "tools": tool_specs,
+        **_run_config_preview_payload(runtime, mock=args.mock, stream=args.stream),
+        "tools": runtime.tool_specs,
     }
     if args.json:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
@@ -374,6 +437,7 @@ def _print_run_preview(payload: dict[str, object]) -> None:
     ):
         print(f"{key}: {payload.get(key)}")
     print(f"tools: {', '.join(str(name) for name in payload.get('tool_names', []))}")
+
 
 def _run_task(args: argparse.Namespace) -> int:
     """Handle the run subcommand."""
@@ -467,56 +531,38 @@ def _execute_agent_task(
     resume_from: str | None = None,
 ) -> dict[str, object]:
     """Build runtime dependencies, execute the agent, and return run metadata."""
-    config = (
-        HarnessConfig.offline(workspace_arg, config_arg)
-        if mock
-        else HarnessConfig.from_env(workspace_arg, provider, config_arg)
+    runtime = _build_cli_runtime(
+        workspace_arg=workspace_arg,
+        config_arg=config_arg,
+        mock=mock,
+        provider=provider,
+        approval_override=approval_override,
+        tool_profile_override=tool_profile_override,
+        command_profile_override=command_profile_override,
+        max_steps_override=max_steps_override,
+        max_run_tokens_override=max_run_tokens_override,
     )
-    config = _apply_budget_overrides(config, max_steps_override, max_run_tokens_override)
-    workspace = Workspace(config.workspace)
-    command_profile = command_profile_override or config.command_profile
-    policy = CommandPolicy.default(command_profile)
-    approval = ApprovalController(approval_override or config.approval)
-    executor = CommandExecutor(workspace, policy, config.timeout_seconds, config.max_tool_output_chars, approval)
-    tool_profile = tool_profile_override or config.tool_profile
-    router = build_default_router(workspace, executor, config.max_tool_output_chars, tool_profile=tool_profile)
-    tool_specs = router.specs()
-    system_prompt = render_system_prompt(router)
-    checkpoint_store = RunCheckpointStore(workspace.checkpoints_dir)
+    checkpoint_store = RunCheckpointStore(runtime.workspace.checkpoints_dir)
     loaded_checkpoint = checkpoint_store.load_state(resume_from) if resume_from is not None else None
     if loaded_checkpoint is not None and loaded_checkpoint.status == "completed":
         raise ValueError(f"Checkpoint is already completed: {resume_from}")
-    logger = RunLogger(workspace.logs_dir)
-    mode = "mock" if mock else "model"
-    logger.event(
-        "run_config",
-        run_config_snapshot(
-            config,
-            mode=mode,
-            stream=stream,
-            tool_profile=tool_profile,
-            command_profile=command_profile,
-            approval=approval.mode,
-            tool_specs=tool_specs,
-            system_prompt=system_prompt,
-            resume_from=resume_from,
-        ),
-    )
-    logger.event("tool_profile", {"profile": tool_profile})
-    logger.event("command_profile", {"profile": command_profile})
-    tracker = WorkspaceChangeTracker(workspace)
+    logger = RunLogger(runtime.workspace.logs_dir)
+    logger.event("run_config", _run_config_preview_payload(runtime, mock=mock, stream=stream, resume_from=resume_from))
+    logger.event("tool_profile", {"profile": runtime.tool_profile})
+    logger.event("command_profile", {"profile": runtime.command_profile})
+    tracker = WorkspaceChangeTracker(runtime.workspace)
     before = tracker.capture()
     logger.event("workspace_snapshot", {"phase": "before", "file_count": len(before.files)})
     completed_steps = loaded_checkpoint.step if loaded_checkpoint is not None else 0
-    model = MockModelClient(calls=completed_steps) if mock else OpenAICompatibleClient(config, tool_specs)
+    model = MockModelClient(calls=completed_steps) if mock else OpenAICompatibleClient(runtime.config, runtime.tool_specs)
     callback = _print_stream_chunk if stream else None
     try:
         agent = Agent(
-            config=config,
+            config=runtime.config,
             model=model,
-            tools=router,
+            tools=runtime.router,
             logger=logger,
-            workspace=workspace,
+            workspace=runtime.workspace,
             plan=loaded_checkpoint.plan if loaded_checkpoint is not None else None,
             checkpoint_store=checkpoint_store,
             stream=stream,
@@ -539,7 +585,7 @@ def _execute_agent_task(
             "workspace_changes",
             {
                 **changes.to_dict(),
-                "path": workspace.relative(changes_path),
+                "path": runtime.workspace.relative(changes_path),
             },
         )
     return {

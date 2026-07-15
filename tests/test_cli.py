@@ -124,6 +124,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("list-evals", stdout.getvalue())
         self.assertIn("list-profiles", stdout.getvalue())
         self.assertIn("list-tools", stdout.getvalue())
+        self.assertIn("preview-run", stdout.getvalue())
         self.assertIn("resume", stdout.getvalue())
         self.assertIn("server", stdout.getvalue())
         self.assertIn("show-eval", stdout.getvalue())
@@ -241,6 +242,54 @@ class CliTests(unittest.TestCase):
             self.assertNotIn("api_key", payload)
             self.assertNotIn("system_prompt", payload)
 
+    def test_preview_run_matches_run_config_trace(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            args = [
+                "--workspace",
+                tmp,
+                "--mock",
+                "--tool-profile",
+                "read-only",
+                "--command-profile",
+                "strict",
+                "--approval",
+                "auto",
+                "--max-steps",
+                "1",
+                "--max-run-tokens",
+                "10",
+            ]
+            preview_stdout = io.StringIO()
+            with redirect_stdout(preview_stdout):
+                self.assertEqual(main(["preview-run", *args, "--json"]), 0)
+            preview = json.loads(preview_stdout.getvalue())
+
+            run_stdout = io.StringIO()
+            with redirect_stdout(run_stdout):
+                self.assertEqual(main(["run", *args, "Inspect this project"]), 0)
+            run_id = [line for line in run_stdout.getvalue().splitlines() if line.startswith("run_id:")][0].split(":", 1)[1].strip()
+
+            show_stdout = io.StringIO()
+            with redirect_stdout(show_stdout):
+                self.assertEqual(main(["show-run", "--workspace", tmp, "--json", run_id]), 0)
+            records = json.loads(show_stdout.getvalue())
+            traced = [record for record in records if record["kind"] == "run_config"][0]["payload"]
+
+            for key in (
+                "mode",
+                "stream",
+                "tool_profile",
+                "command_profile",
+                "approval",
+                "workspace",
+                "max_steps",
+                "max_run_tokens",
+                "tool_count",
+                "tool_names",
+                "tool_schema_sha256",
+                "system_prompt_sha256",
+            ):
+                self.assertEqual(preview[key], traced[key])
     def test_preview_run_text_outputs_runtime_setup(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             stdout = io.StringIO()
@@ -253,6 +302,7 @@ class CliTests(unittest.TestCase):
             self.assertIn("tool_profile: read-only", output)
             self.assertIn("tool_count: 5", output)
             self.assertIn("tools: git_diff, git_status, list_files, read_file, search_text", output)
+
     def test_init_command_json_output(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             stdout = io.StringIO()
