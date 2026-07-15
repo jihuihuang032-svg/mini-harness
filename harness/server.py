@@ -429,8 +429,8 @@ def create_handler(app: HarnessServer) -> type[BaseHTTPRequestHandler]:
                 payload = self._read_json()
                 task = payload.get("task")
                 resume_from = payload.get("resume_from")
-                mock = payload.get("mock", True)
-                stream = bool(payload.get("stream", False))
+                mock = self._json_bool(payload, "mock", True)
+                stream = self._json_bool(payload, "stream", False)
                 if resume_from is not None:
                     if not isinstance(resume_from, str):
                         self._json(400, {"error": "Field 'resume_from' must be a string."})
@@ -439,7 +439,7 @@ def create_handler(app: HarnessServer) -> type[BaseHTTPRequestHandler]:
                     if provider is not None and not isinstance(provider, str):
                         self._json(400, {"error": "Field 'provider' must be a string."})
                         return
-                    self._json(202, app.submit_resume_task(resume_from, mock=mock is not False, provider=provider, stream=stream))
+                    self._json(202, app.submit_resume_task(resume_from, mock=mock, provider=provider, stream=stream))
                     return
                 if not isinstance(task, str):
                     self._json(400, {"error": "Field 'task' must be a string."})
@@ -465,6 +465,12 @@ def create_handler(app: HarnessServer) -> type[BaseHTTPRequestHandler]:
             if raw in {"0", "false", "no", "off"}:
                 return False
             raise ValueError(f"Query parameter {name!r} must be a boolean.")
+
+        def _json_bool(self, payload: dict[str, object], name: str, default: bool) -> bool:
+            value = payload.get(name, default)
+            if isinstance(value, bool):
+                return value
+            raise ValueError(f"Field {name!r} must be a boolean.")
 
         def _read_json(self) -> dict[str, object]:
             length = int(self.headers.get("Content-Length", "0"))

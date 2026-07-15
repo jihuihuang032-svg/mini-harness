@@ -142,6 +142,35 @@ class HarnessServerTests(unittest.TestCase):
             self.assertEqual(checkpoint["status"], "completed")
             self.assertGreater(len(checkpoint["messages"]), 1)
 
+    def test_http_tasks_rejects_string_bool_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            server = HarnessServer(tmp)
+
+            status, payload = _request_json(
+                server,
+                "/tasks",
+                method="POST",
+                body={"task": "Inspect this project", "stream": "false"},
+            )
+
+            self.assertEqual(status, 400)
+            self.assertIn("stream", payload["error"])
+            self.assertIn("boolean", payload["error"])
+
+    def test_http_tasks_mock_false_requires_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            server = HarnessServer(tmp)
+
+            status, payload = _request_json(
+                server,
+                "/tasks",
+                method="POST",
+                body={"task": "Inspect this project", "mock": False},
+            )
+
+            self.assertEqual(status, 400)
+            self.assertIn("provider", payload["error"])
+
     def test_submit_mock_task_runs_asynchronously(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             server = HarnessServer(tmp)
@@ -259,7 +288,12 @@ class HarnessServerTests(unittest.TestCase):
             self.assertIn("final", trace_kinds)
 
 
-def _request_json(app: HarnessServer, path: str) -> tuple[int, dict[str, object]]:
+def _request_json(
+    app: HarnessServer,
+    path: str,
+    method: str = "GET",
+    body: dict[str, object] | None = None,
+) -> tuple[int, dict[str, object]]:
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), create_handler(app))
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
@@ -267,7 +301,9 @@ def _request_json(app: HarnessServer, path: str) -> tuple[int, dict[str, object]
         host, port = httpd.server_address
         conn = HTTPConnection(host, port, timeout=5)
         try:
-            conn.request("GET", path)
+            raw_body = json.dumps(body).encode("utf-8") if body is not None else None
+            headers = {"Content-Type": "application/json"} if raw_body is not None else {}
+            conn.request(method, path, body=raw_body, headers=headers)
             response = conn.getresponse()
             body = response.read().decode("utf-8")
             payload = json.loads(body)
