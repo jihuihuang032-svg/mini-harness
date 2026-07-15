@@ -31,6 +31,7 @@ from harness.runtime.logger import RunLogger
 from harness.runtime.policy import CommandPolicy
 from harness.runtime.run_config import run_config_snapshot
 from harness.runtime.run_store import RunStore
+from harness.runtime.task_store import TaskStore
 from harness.runtime.workspace import Workspace
 from harness.server import serve
 from harness.tools import build_default_router
@@ -44,12 +45,14 @@ COMMANDS = {
     "list-evals",
     "list-profiles",
     "list-runs",
+    "list-tasks",
     "list-tools",
     "preview-run",
     "resume",
     "run",
     "show-eval",
     "show-run",
+    "show-task",
     "show-changes",
     "show-checkpoint",
     "list-providers",
@@ -215,6 +218,14 @@ def main(argv: list[str] | None = None) -> int:
     tools_parser.add_argument("--command-profile", choices=["default", "strict"], help="Override command profile.")
     tools_parser.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
 
+    tasks_parser = subparsers.add_parser("list-tasks", help="List persisted async server tasks.")
+    _add_common_workspace_arg(tasks_parser)
+    tasks_parser.add_argument("--limit", type=int, default=20, help="Maximum number of tasks to show.")
+    tasks_parser.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    task_parser = subparsers.add_parser("show-task", help="Show one persisted async server task.")
+    _add_common_workspace_arg(task_parser)
+    task_parser.add_argument("task_id", help="Task id to load.")
+    task_parser.add_argument("--json", action="store_true", help="Print raw JSON task record.")
     show_parser = subparsers.add_parser("show-run", help="Show one run trace.")
     _add_common_workspace_arg(show_parser)
     show_parser.add_argument("run_id", help="Run id to load.")
@@ -271,6 +282,8 @@ def main(argv: list[str] | None = None) -> int:
             return _list_evals(args)
         if args.command == "list-runs":
             return _list_runs(args)
+        if args.command == "list-tasks":
+            return _list_tasks(args)
         if args.command == "list-tools":
             return _list_tools(args)
         if args.command == "preview-run":
@@ -279,6 +292,8 @@ def main(argv: list[str] | None = None) -> int:
             return _show_eval(args)
         if args.command == "show-run":
             return _show_run(args)
+        if args.command == "show-task":
+            return _show_task(args)
         if args.command == "show-changes":
             return _show_changes(args)
         if args.command == "show-checkpoint":
@@ -756,6 +771,61 @@ def _list_runs(args: argparse.Namespace) -> int:
         )
     return 0
 
+
+def _task_store_for_workspace(workspace_arg: str | None, config_arg: str | None) -> TaskStore:
+    config = HarnessConfig.offline(workspace_arg, config_arg)
+    workspace = Workspace(config.workspace)
+    return TaskStore(workspace.tasks_path)
+
+
+def _list_tasks(args: argparse.Namespace) -> int:
+    store = _task_store_for_workspace(args.workspace, args.config)
+    records = sorted(store.load_latest(), key=lambda record: record.updated_at or record.created_at, reverse=True)
+    if args.limit >= 0:
+        records = records[: args.limit]
+    payload = [record.to_dict() for record in records]
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
+    if not records:
+        print("No tasks found.")
+        return 0
+    for record in records:
+        task_preview = record.task.replace("\n", " ")[:80]
+        provider = record.provider or "-"
+        duration = "-" if record.duration_seconds is None else f"{record.duration_seconds:.3f}s"
+        print(
+            f"{record.task_id}\t{record.status}\t{record.mode}\t{provider}\t"
+            f"duration={duration}\t{record.updated_at}\t{task_preview}"
+        )
+    return 0
+
+
+def _show_task(args: argparse.Namespace) -> int:
+    store = _task_store_for_workspace(args.workspace, args.config)
+    for record in store.load_latest():
+        if record.task_id != args.task_id:
+            continue
+        payload = record.to_dict()
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+            return 0
+        print(f"task_id: {record.task_id}")
+        print(f"run_id: {record.run_id}")
+        print(f"status: {record.status}")
+        print(f"mode: {record.mode}")
+        print(f"provider: {record.provider or '-'}")
+        print(f"stream: {record.stream}")
+        print(f"created_at: {record.created_at}")
+        print(f"updated_at: {record.updated_at}")
+        print(f"started_at: {record.started_at or '-'}")
+        print(f"finished_at: {record.finished_at or '-'}")
+        print(f"duration_seconds: {record.duration_seconds if record.duration_seconds is not None else '-'}")
+        if record.error:
+            print(f"error: {record.error}")
+        print(f"task: {record.task}")
+        return 0
+    raise ValueError(f"Task not found: {args.task_id}")
 
 def _list_tools(args: argparse.Namespace) -> int:
     config = HarnessConfig.offline(args.workspace, args.config)

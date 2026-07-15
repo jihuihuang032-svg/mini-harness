@@ -11,6 +11,8 @@ from pathlib import Path
 
 from harness import __version__
 from harness.cli import main
+from harness.runtime.task_queue import TaskRecord
+from harness.runtime.task_store import TaskStore
 
 
 class CliTests(unittest.TestCase):
@@ -174,6 +176,52 @@ class CliTests(unittest.TestCase):
             self.assertTrue((Path(tmp) / "harness.json").exists())
             self.assertTrue((Path(tmp) / ".env").exists())
 
+    def test_list_and_show_tasks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            store = TaskStore(workspace / ".harness" / "tasks.jsonl")
+            record = TaskRecord(
+                task_id="task-1",
+                run_id="run-1",
+                task="Inspect this project",
+                stream=True,
+                mode="mock",
+                status="completed",
+                started_at="2026-07-15T00:00:00+00:00",
+                finished_at="2026-07-15T00:00:01+00:00",
+                duration_seconds=1.0,
+                result={"ok": True},
+            )
+            store.append(record)
+
+            list_stdout = io.StringIO()
+            with redirect_stdout(list_stdout):
+                self.assertEqual(main(["list-tasks", "--workspace", tmp]), 0)
+
+            self.assertIn("task-1", list_stdout.getvalue())
+            self.assertIn("completed", list_stdout.getvalue())
+            self.assertIn("duration=1.000s", list_stdout.getvalue())
+
+            list_json_stdout = io.StringIO()
+            with redirect_stdout(list_json_stdout):
+                self.assertEqual(main(["list-tasks", "--workspace", tmp, "--json"]), 0)
+            payload = json.loads(list_json_stdout.getvalue())
+            self.assertEqual(payload[0]["task_id"], "task-1")
+            self.assertEqual(payload[0]["duration_seconds"], 1.0)
+
+            show_stdout = io.StringIO()
+            with redirect_stdout(show_stdout):
+                self.assertEqual(main(["show-task", "--workspace", tmp, "task-1"]), 0)
+            self.assertIn("task_id: task-1", show_stdout.getvalue())
+            self.assertIn("run_id: run-1", show_stdout.getvalue())
+            self.assertIn("duration_seconds: 1.0", show_stdout.getvalue())
+
+            show_json_stdout = io.StringIO()
+            with redirect_stdout(show_json_stdout):
+                self.assertEqual(main(["show-task", "--workspace", tmp, "--json", "task-1"]), 0)
+            task_payload = json.loads(show_json_stdout.getvalue())
+            self.assertEqual(task_payload["task_id"], "task-1")
+            self.assertEqual(task_payload["result"], {"ok": True})
     def test_list_tools_text_and_json(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             stdout = io.StringIO()
