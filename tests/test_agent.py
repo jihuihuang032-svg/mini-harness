@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import unittest
 
@@ -16,6 +16,10 @@ class ParseActionTests(unittest.TestCase):
         self.assertEqual(action.type, "final")
         self.assertEqual(action.content, "done")
 
+    def test_parse_action_finds_first_valid_json_object(self) -> None:
+        action = parse_action('noise {not json} before {"type":"final","content":"done"} after')
+        self.assertEqual(action.type, "final")
+        self.assertEqual(action.content, "done")
     def test_parse_action_rejects_missing_tool_name(self) -> None:
         with self.assertRaises(ValueError):
             parse_action('{"type":"tool_call","args":{}}')
