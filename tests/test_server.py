@@ -32,6 +32,54 @@ class HarnessServerTests(unittest.TestCase):
             self.assertIn("Real provider", html)
             self.assertIn(str(Path(tmp).resolve()), html)
 
+    def test_preview_run_returns_non_secret_runtime_setup(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "harness.json"
+            config_path.write_text('{"tool_profile": "read-only", "command_profile": "strict"}', encoding="utf-8")
+            server = HarnessServer(tmp, config_path=str(config_path))
+
+            preview = server.preview_run(stream=True)
+
+            self.assertEqual(preview["mode"], "mock")
+            self.assertTrue(preview["stream"])
+            self.assertEqual(preview["workspace"], str(Path(tmp).resolve()))
+            self.assertEqual(preview["tool_profile"], "read-only")
+            self.assertEqual(preview["command_profile"], "strict")
+            self.assertEqual(preview["approval"], "never")
+            self.assertEqual(preview["tool_count"], 5)
+            self.assertEqual(preview["tool_names"], ["git_diff", "git_status", "list_files", "read_file", "search_text"])
+            self.assertEqual(len(preview["tool_schema_sha256"]), 64)
+            self.assertEqual(len(preview["system_prompt_sha256"]), 64)
+            self.assertIn("tools", preview)
+            self.assertIn("args_schema", preview["tools"][0])
+            self.assertNotIn("api_key", preview)
+            self.assertNotIn("system_prompt", preview)
+
+    def test_preview_run_matches_mock_run_trace_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "harness.json"
+            config_path.write_text('{"tool_profile": "read-only", "command_profile": "strict"}', encoding="utf-8")
+            server = HarnessServer(tmp, config_path=str(config_path))
+
+            preview = server.preview_run(stream=True)
+            result = server.run_mock_task("Inspect this project", stream=True)
+            records = server.load_run(str(result["run_id"]))
+            traced = [record for record in records if record["kind"] == "run_config"][0]["payload"]
+
+            for key in (
+                "mode",
+                "stream",
+                "tool_profile",
+                "command_profile",
+                "approval",
+                "workspace",
+                "max_steps",
+                "tool_count",
+                "tool_names",
+                "tool_schema_sha256",
+                "system_prompt_sha256",
+            ):
+                self.assertEqual(preview[key], traced[key])
     def test_run_mock_task_creates_run_trace(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             server = HarnessServer(tmp)

@@ -67,6 +67,37 @@ class HarnessServer:
     def providers(self) -> list[dict[str, str]]:
         return [PROVIDER_PRESETS[name].to_dict() for name in provider_names()]
 
+    def preview_run(self, mock: bool = True, provider: str | None = None, stream: bool = False) -> dict[str, object]:
+        config = self.config if mock else HarnessConfig.from_env(str(self.workspace.root), provider, self.config_path)
+        approval = ApprovalController("never")
+        executor = CommandExecutor(
+            self.workspace,
+            CommandPolicy.default(config.command_profile),
+            config.timeout_seconds,
+            config.max_tool_output_chars,
+            approval,
+        )
+        router = build_default_router(
+            self.workspace,
+            executor,
+            config.max_tool_output_chars,
+            tool_profile=config.tool_profile,
+        )
+        tool_specs = router.specs()
+        system_prompt = render_system_prompt(router)
+        return {
+            **run_config_snapshot(
+                config,
+                mode="mock" if mock else "model",
+                stream=stream,
+                tool_profile=config.tool_profile,
+                command_profile=config.command_profile,
+                approval=approval.mode,
+                tool_specs=tool_specs,
+                system_prompt=system_prompt,
+            ),
+            "tools": tool_specs,
+        }
     def list_runs(self, limit: int = 20) -> list[dict[str, object]]:
         return [summary.to_dict() for summary in self.store.list_runs(limit=limit)]
 
@@ -435,6 +466,13 @@ def create_handler(app: HarnessServer) -> type[BaseHTTPRequestHandler]:
         def log_message(self, format: str, *args: object) -> None:
             return
 
+        def _query_bool(self, query: dict[str, list[str]], name: str, default: bool) -> bool:
+            raw = query.get(name, [str(default).lower()])[0].strip().lower()
+            if raw in {"1", "true", "yes", "on"}:
+                return True
+            if raw in {"0", "false", "no", "off"}:
+                return False
+            raise ValueError(f"Query parameter {name!r} must be a boolean.")
         def _read_json(self) -> dict[str, object]:
             length = int(self.headers.get("Content-Length", "0"))
             raw = self.rfile.read(length).decode("utf-8") if length else "{}"

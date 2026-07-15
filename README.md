@@ -335,10 +335,16 @@ python -m harness.cli server --workspace . --host 127.0.0.1 --port 8765
 http://127.0.0.1:8765/
 ```
 
+运行前预览 server 当前配置：
+
+```text
+http://127.0.0.1:8765/preview-run?mock=true&stream=false
+```
 主要接口：
 
 - `GET /health`
 - `GET /providers`
+- `GET /preview-run`
 - `GET /runs?limit=20`
 - `GET /runs/<run_id>`
 - `GET /runs/<run_id>/changes`
