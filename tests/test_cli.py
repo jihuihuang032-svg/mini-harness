@@ -59,6 +59,20 @@ class CliTests(unittest.TestCase):
                 self.assertEqual(main(["show-changes", "--workspace", tmp, run_id]), 0)
             self.assertIn("changed_count:", changes_stdout.getvalue())
 
+            summary_stdout = io.StringIO()
+            with redirect_stdout(summary_stdout):
+                self.assertEqual(main(["show-run", "--workspace", tmp, "--summary", run_id]), 0)
+            self.assertIn("status: completed", summary_stdout.getvalue())
+            self.assertIn("tool_calls: 1", summary_stdout.getvalue())
+            self.assertIn("failed_tools: 0", summary_stdout.getvalue())
+
+            summary_json_stdout = io.StringIO()
+            with redirect_stdout(summary_json_stdout):
+                self.assertEqual(main(["show-run", "--workspace", tmp, "--summary", "--json", run_id]), 0)
+            summary_payload = json.loads(summary_json_stdout.getvalue())
+            self.assertEqual(summary_payload["run_id"], run_id)
+            self.assertEqual(summary_payload["status"], "completed")
+            self.assertEqual(summary_payload["failed_tools"], 0)
             changes_json_stdout = io.StringIO()
             with redirect_stdout(changes_json_stdout):
                 self.assertEqual(main(["show-changes", "--workspace", tmp, "--json", run_id]), 0)

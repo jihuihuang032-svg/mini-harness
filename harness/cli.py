@@ -193,6 +193,7 @@ def main(argv: list[str] | None = None) -> int:
     _add_common_workspace_arg(show_parser)
     show_parser.add_argument("run_id", help="Run id to load.")
     show_parser.add_argument("--json", action="store_true", help="Print raw JSON records.")
+    show_parser.add_argument("--summary", action="store_true", help="Print a compact diagnostic summary instead of the full trace.")
 
     changes_parser = subparsers.add_parser("show-changes", help="Show workspace changes for one run.")
     _add_common_workspace_arg(changes_parser)
@@ -657,6 +658,13 @@ def _list_tools(args: argparse.Namespace) -> int:
 
 def _show_run(args: argparse.Namespace) -> int:
     store = _store_for_workspace(args.workspace, args.config)
+    if args.summary:
+        summary = _run_diagnostic_summary(store, args.run_id)
+        if args.json:
+            print(json.dumps(summary, ensure_ascii=False, indent=2))
+        else:
+            _print_run_diagnostic_summary(summary)
+        return 0
     records = store.load_run(args.run_id)
     if args.json:
         print(json.dumps(records, ensure_ascii=False, indent=2))
@@ -671,6 +679,89 @@ def _show_run(args: argparse.Namespace) -> int:
             preview = preview[:177] + "..."
         print(f"#{seq} {ts} {kind}: {preview}")
     return 0
+
+
+def _run_diagnostic_summary(store: RunStore, run_id: str) -> dict[str, object]:
+    summary = store.summarize_run(run_id)
+    records = store.load_run(run_id)
+    last_error = _last_event_payload(records, {"action_error", "run_finished"}, require_error=True)
+    last_failed_tool = _last_failed_tool(records)
+    tools = summary.tools if isinstance(summary.tools, dict) else {}
+    return {
+        "run_id": summary.run_id,
+        "status": summary.status,
+        "steps": summary.step_count,
+        "events": summary.event_count,
+        "started_at": summary.started_at,
+        "last_event_at": summary.last_event_at,
+        "final": summary.final,
+        "error": summary.error,
+        "changes": summary.changes,
+        "usage": summary.usage,
+        "tool_calls": tools.get("total_calls", 0),
+        "failed_tools": tools.get("failed_calls", 0),
+        "tool_names": tools.get("tool_names", []),
+        "last_error": last_error,
+        "last_failed_tool": last_failed_tool,
+    }
+
+
+def _last_event_payload(records: list[dict[str, object]], kinds: set[str], require_error: bool = False) -> dict[str, object] | None:
+    for record in reversed(records):
+        if record.get("kind") not in kinds:
+            continue
+        payload = record.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        if require_error and not payload.get("error"):
+            continue
+        return payload
+    return None
+
+
+def _last_failed_tool(records: list[dict[str, object]]) -> dict[str, object] | None:
+    for record in reversed(records):
+        if record.get("kind") != "tool_result":
+            continue
+        payload = record.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        result = payload.get("result")
+        if not isinstance(result, dict) or result.get("ok") is True:
+            continue
+        action = payload.get("action") if isinstance(payload.get("action"), dict) else {}
+        return {
+            "tool": action.get("tool", ""),
+            "args": action.get("args", {}),
+            "error": result.get("error") or result.get("stderr") or result,
+        }
+    return None
+
+
+def _print_run_diagnostic_summary(summary: dict[str, object]) -> None:
+    print(f"run_id: {summary['run_id']}")
+    print(f"status: {summary['status']}")
+    print(f"steps: {summary['steps']}")
+    print(f"events: {summary['events']}")
+    print(f"tool_calls: {summary['tool_calls']}")
+    print(f"failed_tools: {summary['failed_tools']}")
+    usage = summary.get("usage")
+    if isinstance(usage, dict):
+        print(f"tokens: {usage.get('total_tokens', '-')}")
+    changes = summary.get("changes")
+    if isinstance(changes, dict):
+        print(f"changes: {changes.get('changed_count', 0)}")
+    if summary.get("final"):
+        final = str(summary["final"]).replace("\n", " ")[:200]
+        print(f"final: {final}")
+    if summary.get("error"):
+        print(f"error: {summary['error']}")
+    if summary.get("last_failed_tool"):
+        print("last_failed_tool:")
+        print(json.dumps(summary["last_failed_tool"], ensure_ascii=False, indent=2))
+    if summary.get("last_error"):
+        print("last_error:")
+        print(json.dumps(summary["last_error"], ensure_ascii=False, indent=2))
 
 
 def _show_changes(args: argparse.Namespace) -> int:
