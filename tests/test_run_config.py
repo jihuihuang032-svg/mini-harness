@@ -34,6 +34,7 @@ class RunConfigSnapshotTests(unittest.TestCase):
             self.assertEqual(snapshot["tool_count"], 1)
             self.assertEqual(snapshot["tool_names"], ["read_file"])
             self.assertEqual(snapshot["max_run_tokens"], 0)
+            self.assertEqual(snapshot["workspace"], str(Path(tmp).resolve()))
             self.assertEqual(snapshot["json_mode"], False)
             self.assertEqual(snapshot["trace_messages"], False)
             self.assertEqual(snapshot["trace_model_responses"], False)
