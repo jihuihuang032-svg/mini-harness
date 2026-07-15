@@ -67,6 +67,8 @@ def task_record_from_dict(raw: dict[str, object]) -> TaskRecord:
         status = "failed"
     metadata = raw.get("metadata", {})
     result = raw.get("result")
+    duration = raw.get("duration_seconds")
+    duration_seconds = float(duration) if isinstance(duration, (int, float)) and not isinstance(duration, bool) else None
     return TaskRecord(
         task_id=task_id,
         run_id=run_id,
@@ -78,6 +80,9 @@ def task_record_from_dict(raw: dict[str, object]) -> TaskRecord:
         status=status,  # type: ignore[arg-type]  # mypy 忽略:已校验过白名单
         created_at=str(raw.get("created_at", "")),
         updated_at=str(raw.get("updated_at", "")),
+        started_at=raw.get("started_at") if isinstance(raw.get("started_at"), str) else None,
+        finished_at=raw.get("finished_at") if isinstance(raw.get("finished_at"), str) else None,
+        duration_seconds=duration_seconds,
         result=result if isinstance(result, dict) else None,
         error=raw.get("error") if isinstance(raw.get("error"), str) else None,
     )

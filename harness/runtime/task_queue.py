@@ -56,6 +56,9 @@ class TaskRecord:
     status: TaskStatus = "queued"
     created_at: str = field(default_factory=_now)    # 默认值工厂:每次构造调 _now
     updated_at: str = field(default_factory=_now)
+    started_at: str | None = None
+    finished_at: str | None = None
+    duration_seconds: float | None = None
     result: dict[str, object] | None = None
     error: str | None = None
 
@@ -72,6 +75,9 @@ class TaskRecord:
             "status": self.status,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
+            "started_at": self.started_at,
+            "finished_at": self.finished_at,
+            "duration_seconds": self.duration_seconds,
             "result": self.result,
             "error": self.error,
         }
@@ -96,7 +102,9 @@ class TaskQueue:
                 if record.status in {"queued", "running"}:
                     record.status = "failed"
                     record.error = "Task was interrupted before server restart."
-                    record.updated_at = _now()
+                    record.finished_at = _now()
+                    record.duration_seconds = _duration_seconds(record.started_at, record.finished_at)
+                    record.updated_at = record.finished_at
                     self.store.append(record)
                 self._tasks[record.task_id] = record
 
@@ -151,7 +159,8 @@ class TaskQueue:
         with self._lock:
             record = self._tasks[task_id]
             record.status = "running"
-            record.updated_at = _now()
+            record.started_at = _now()
+            record.updated_at = record.started_at
             self._persist(record)
             task = record.task
             stream = record.stream
@@ -166,7 +175,9 @@ class TaskQueue:
                 record = self._tasks[task_id]
                 record.status = "failed"
                 record.error = str(exc)
-                record.updated_at = _now()
+                record.finished_at = _now()
+                record.duration_seconds = _duration_seconds(record.started_at, record.finished_at)
+                record.updated_at = record.finished_at
                 self._persist(record)
             return
         # 3. 成功:标记 completed 并保存结果
@@ -174,7 +185,9 @@ class TaskQueue:
             record = self._tasks[task_id]
             record.status = "completed"
             record.result = result
-            record.updated_at = _now()
+            record.finished_at = _now()
+            record.duration_seconds = _duration_seconds(record.started_at, record.finished_at)
+            record.updated_at = record.finished_at
             self._persist(record)
 
     def _persist(self, record: TaskRecord) -> None:
@@ -200,6 +213,20 @@ def _copy_record(record: TaskRecord) -> TaskRecord:
         status=record.status,
         created_at=record.created_at,
         updated_at=record.updated_at,
+        started_at=record.started_at,
+        finished_at=record.finished_at,
+        duration_seconds=record.duration_seconds,
         result=dict(record.result) if record.result is not None else None,
         error=record.error,
     )
+
+
+def _duration_seconds(started_at: str | None, finished_at: str | None) -> float | None:
+    if not started_at or not finished_at:
+        return None
+    try:
+        started = datetime.fromisoformat(started_at)
+        finished = datetime.fromisoformat(finished_at)
+    except ValueError:
+        return None
+    return max(0.0, round((finished - started).total_seconds(), 6))
