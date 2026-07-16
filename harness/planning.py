@@ -49,7 +49,7 @@ class PlanState:
             2. {"id": "...", "content": "...", "status": "..."}:完整对象,id 可选(不传则自动分配)
         status 必须是 pending/in_progress/completed 之一,否则抛 ValueError。
         """
-        parsed = _parse_items(raw_items)
+        parsed = _parse_items(raw_items, existing_items=self.items)
         # 给缺 id 的项分配序号(从 1 开始,跳过已存在的 id)
         existing_ids = {item.id for item in parsed}
         next_id = 1
@@ -141,7 +141,7 @@ class PlanState:
         return PlanState(items=items)
 
 
-def _parse_items(raw_items: list[object]) -> list[TodoItem]:
+def _parse_items(raw_items: list[object], existing_items: list[TodoItem] | None = None) -> list[TodoItem]:
     """从模型 plan 动作的 items 字段解析出 TodoItem 列表。
 
     接受两种格式:
@@ -160,16 +160,29 @@ def _parse_items(raw_items: list[object]) -> list[TodoItem]:
         if not isinstance(raw, dict):
             raise ValueError(f"Plan item must be string or object, got {type(raw).__name__}")
         content = raw.get("content")
+        item_id = raw.get("id", "")
+        if (not isinstance(content, str) or not content) and isinstance(item_id, str):
+            # Some real models send {id, status} under type=plan when they mean todo_update.
+            # Keep the previous content for that id instead of failing the whole run.
+            content = _existing_content(existing_items, item_id)
         if not isinstance(content, str) or not content:
             raise ValueError("Plan item must have non-empty string 'content'.")
         status = raw.get("status", "pending")
         if status not in _VALID_STATUSES:
             raise ValueError(f"Todo status must be one of {_VALID_STATUSES}, got {status!r}")
-        item_id = raw.get("id", "")
         if not isinstance(item_id, str) and item_id is not None:
             raise ValueError("Plan item 'id' must be a string if provided.")
         parsed.append(TodoItem(id=str(item_id) if item_id else "", content=content, status=status))  # type: ignore[arg-type]
     return parsed
+
+
+def _existing_content(existing_items: list[TodoItem] | None, item_id: str) -> str | None:
+    if existing_items is None:
+        return None
+    for item in existing_items:
+        if item.id == item_id:
+            return item.content
+    return None
 
 
 def _status_mark(status: TodoStatus) -> str:

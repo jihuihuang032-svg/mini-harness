@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import unittest
 
@@ -16,6 +16,20 @@ class PlanStateTests(unittest.TestCase):
         self.assertEqual(snapshot["items"][0], {"id": "1", "content": "Inspect files", "status": "pending"})
         self.assertEqual(snapshot["items"][1], {"id": "custom", "content": "Run tests", "status": "pending"})
 
+    def test_replace_reuses_existing_content_when_model_sends_status_only_items(self) -> None:
+        plan = PlanState()
+        plan.replace([
+            {"id": "1", "content": "Inspect files", "status": "in_progress"},
+            {"id": "2", "content": "Summarize result", "status": "pending"},
+        ])
+
+        snapshot = plan.replace([
+            {"id": "1", "status": "completed"},
+            {"id": "2", "status": "in_progress"},
+        ])
+
+        self.assertEqual(snapshot["items"][0], {"id": "1", "content": "Inspect files", "status": "completed"})
+        self.assertEqual(snapshot["items"][1], {"id": "2", "content": "Summarize result", "status": "in_progress"})
     def test_update_changes_status(self) -> None:
         plan = PlanState()
         plan.replace([{"id": "1", "content": "Inspect", "status": "in_progress"}])
